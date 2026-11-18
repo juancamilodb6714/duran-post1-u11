@@ -135,3 +135,15 @@ El tiempo no baja de forma proporcional. De 1 a 2 streams se ganan 2.3 ms, de 2 
 ![Barrido de NSTREAMS](capturas/p1_cp5_barrido_streams.png)
 
 ---
+
+# Parte 2: Análisis comparativo de aceleradores
+
+Todo el análisis está en [docs/analisis-comparativo.md](docs/analisis-comparativo.md). Tiene la caracterización de GPU, TPU, NPU y FPGA, las tablas de MLPerf Inference v4.1 sacadas del repositorio oficial de resultados de MLCommons, el análisis de costo y TCO para nube y borde, la recomendación para los perfiles A, B y C, la sección de cuantización INT8 frente a FP32 y las decisiones técnicas de los Pasos 6 y 7, con 12 referencias en APA.
+
+## Comportamiento observado
+
+- Colab trae CUDA 13.0 y no 12.x, compiló sin warnings con `nvcc -O2`.
+- El kernel de vectorAdd tardó 0.76 ms y no 1.8 ms, la T4 va al 83% de su ancho de banda de memoria.
+- Con `malloc` normal las copias salen a unos 2.6 GB/s y con `cudaHostAlloc` a unos 12 GB/s, por eso el GPU total del Paso 2 es tan alto.
+- El tiling dio solo 1.5x porque la caché L1 y L2 de la T4 ya ayuda mucho a la versión naive.
+- Los streams redujeron 19.5% y no 11.7%, porque la T4 solapa la copia de subida con la de bajada.

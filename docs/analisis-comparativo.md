@@ -119,3 +119,56 @@ Se recomienda una FPGA por línea, el detalle está en la decisión técnica del
 ### Perfil C, proveedor de nube que entrena modelos de 70B en clústeres de 512 aceleradores
 
 Se recomienda un clúster de GPU H100 o H200 con NVLink dentro de cada nodo y InfiniBand entre nodos. El primer criterio es la comunicación colectiva, con 900 GB/s de NVLink por GPU y la librería NCCL el all-reduce de los gradientes se hace rápido dentro del nodo. El segundo es que un proveedor de nube puede comprar GPU, mientras que las TPU solo existen dentro de Google Cloud, entonces no puede montar su propio pod de TPU. El tercero es el rendimiento, en MLPerf v4.1 la H200 da 34864 tokens/s en Llama 2 70B con 8 GPU (NVIDIA, 2024). La limitación es la energía, 512 GPU a 700 W son 358 kW solo en aceleradores, y el precio. Si el proveedor fuera Google, un pod de TPU con ICI y conmutadores ópticos sería igual de válido (Jouppi et al., 2023).
+
+## 5. Cuantización INT8 frente a FP32
+
+| Precisión | Throughput pico en Tensor Core | Modelo | Exactitud reportada | Restricción de MLPerf |
+|---|---|---|---|---|
+| FP32 referencia | 67 TFLOPS FP32 en H100, sin Tensor Core | ResNet-50 v1.5 | 76.46% top-1 referencia MLPerf, 76.16% en Wu et al. | referencia del 100% |
+| FP16 o BF16 | T4 65 TFLOPS, A100 312 TFLOPS, H100 989 TFLOPS | ResNet-50 v1.5 | prácticamente igual a FP32 | al menos 99% de FP32, 75.70% |
+| INT8 calibrado | T4 130 TOPS, A100 624 TOPS, H100 1979 TOPS | ResNet-50 v1.5 | 76.14% con el mejor método, 76.05% con entropía | al menos 99% de FP32, 75.70% |
+| INT8 calibrado | igual que arriba | BERT-Large, SQuAD v1.1 | F1 90.94 con el mejor método frente a 91.01 en FP32 | al menos 99% o 99.9% de F1 90.874 |
+
+Fuentes, Wu et al. (2020) para las exactitudes, Reddi et al. (2020) y MLCommons (2024) para las restricciones, y las hojas de datos de NVIDIA para los TOPS.
+
+Al poner las tres generaciones lado a lado se ve que la proporción es siempre la misma, INT8 da el doble que FP16 en T4, A100 y H100. Eso pasa porque un multiplicador de 8 bits ocupa mucho menos silicio que uno de 16, y en el mismo Tensor Core caben el doble de operaciones por ciclo. También se mueven la mitad de bytes por peso, lo que ayuda cuando el modelo está limitado por memoria.
+
+Lo que más sorprendió es lo que pasa sin calibrar bien. En la tabla de Wu et al. (2020), BERT-Large con calibración por máximo cae de 91.01 a 85.92 de F1, y con entropía se va a 37.40, mientras que con percentil 99.99% queda en 90.20. EfficientNet b0 con máximo cae de 76.85% a 22.3%. O sea que convertir a INT8 no es un cast, cada capa necesita su propio factor de escala elegido con datos reales, porque si un solo valor atípico define el rango los demás valores quedan amontonados en pocos niveles de los 256 que tiene INT8. Por eso MLPerf exige que todo envío cuantizado conserve el 99% de la exactitud FP32, 99.9% en la variante estricta de BERT, medido sobre el conjunto de validación completo (Reddi et al., 2020). Los envíos de H200 en BERT-99 de las tablas anteriores cumplen esa regla.
+
+## 6. Decisión técnica — ¿GPU centralizada o FPGA distribuida para el Perfil B?
+
+Primero se hizo la cuenta de carga. Son 50 líneas a 10 imágenes por segundo, 500 imágenes por segundo en total. Si la H100 atendiera una imagen a la vez con 1.5 ms por imagen, estaría ocupada 0.75 s de cada segundo, un 75%, y con una cola M/D/1 la espera media sería de unos 2.25 ms, en total cerca de 3.75 ms, todavía bajo los 5 ms en promedio pero con colas largas en los picos. En la práctica la GPU atiende muchas imágenes en paralelo con varios streams o batch pequeño, y en MLPerf una H100 aguanta unas 73000 consultas por segundo de ResNet-50 con p99 bajo 15 ms, así que 500 por segundo es menos del 1% de su capacidad y el throughput sí alcanza. En capital la GPU gana fácil, un servidor con una H100 cuesta unos 30000 USD contra 400000 USD de 50 Alveo al precio de la guía, o 237350 USD al precio actual de AMD. El problema es que la centralización crea un punto único de falla, si se cae la GPU, el servidor o la red se quedan las 50 líneas sin inspección al mismo tiempo, y además las líneas compiten por el mismo dispositivo y el jitter del sistema operativo, del driver y del planificador de CUDA hace que la latencia máxima no esté garantizada aunque el promedio sea bueno. La FPGA corre su pipeline fijo en hardware y la latencia sale igual en cada imagen. Si el rechazo de piezas tiene que ver con seguridad industrial se debe elegir la FPGA distribuida aunque cueste más, porque lo que importa es la latencia máxima y no la media. Si fuera solo control de calidad sin riesgo, la GPU centralizada con un segundo servidor de respaldo sería una opción razonable y mucho más barata.
+
+## 7. Decisión técnica — ¿Conviene cuantizar el modelo del Perfil B a INT8?
+
+Si el modelo ya cumple los 5 ms en FP16 parece que cuantizar no sirve de nada, pero no es así. Con INT8 el mismo hardware hace el doble de inferencias, entonces queda margen de capacidad, en la GPU centralizada eso deja atender más líneas sin subir la latencia de cada una, y en la FPGA el pipeline con multiplicadores de 8 bits gasta menos DSP y deja espacio para un modelo más grande o para más cámaras. Eso es útil si la planta piensa crecer más allá de las 50 líneas. El riesgo está en cómo se valida. Según Wu et al. (2020) ResNet-50 pierde apenas 0.02 puntos de top-1, pero ese número es un promedio sobre 1000 clases de ImageNet, y en una planta la clase defecto es minoritaria, tiene pocas muestras y suele depender de detalles finos como una grieta pequeña, justo lo que más sufre con el ruido de cuantización. Un falso negativo deja pasar una pieza mala, cuesta mucho más que un falso positivo que solo manda una pieza buena a revisión manual. Por eso no basta con el top-1 general, el equipo debe medir precisión y sobre todo recall de la clase defecto con un conjunto de validación propio de la planta, comparando FP16 contra INT8 y usando calibración por percentil o QAT si hace falta. La recomendación es cuantizar a INT8 solo si esa validación confirma que el recall de piezas defectuosas no baja de forma significativa, si baja se deja el modelo en FP16, porque el margen ganado no compensa dejar pasar defectos.
+
+## Conclusiones
+
+No hay un acelerador mejor para todo. La GPU gana en throughput y en flexibilidad, por eso sigue siendo la base para entrenar y para la nube. La TPU es muy competitiva por chip y se alquila barato por hora, pero solo vive en Google Cloud y obliga a usar XLA. La NPU es la única que cabe en un celular o una cámara con pocos vatios. La FPGA es la que da latencia determinística y por eso es la indicada cuando una falla de tiempo tiene consecuencias reales. Revisando los datos de MLPerf se notó también que comparar TOPS de hoja de datos engaña, porque vienen con sparsity o en INT8, y que la cuantización a INT8 duplica el rendimiento de verdad, pero solo con calibración y validando la clase que más importa.
+
+## Referencias
+
+AMD. (n.d.). *AMD Alveo U55C high performance compute card*. Recuperado el 18 de noviembre de 2026, de https://www.amd.com/en/products/accelerators/alveo/u55c/a-u55c-p00g-pq-g.html
+
+Apple. (2025, 5 de marzo). *Apple reveals M3 Ultra, taking Apple silicon to a new extreme* [Comunicado de prensa]. https://www.apple.com/newsroom/2025/03/apple-reveals-m3-ultra-taking-apple-silicon-to-a-new-extreme/
+
+Byrne, J. (2024, 20 de septiembre). *MLPerf reveals Blackwell gains, Untether's power efficiency*. XPU.pub. https://xpu.pub/2024/09/20/mlperf-4-1/
+
+Google Cloud. (n.d.-a). *TPU v6e*. Recuperado el 18 de noviembre de 2026, de https://docs.cloud.google.com/tpu/docs/v6e
+
+Google Cloud. (n.d.-b). *TPU v5e*. Recuperado el 18 de noviembre de 2026, de https://docs.cloud.google.com/tpu/docs/v5e
+
+Google Cloud. (n.d.-c). *Precios de TPU*. Recuperado el 18 de noviembre de 2026, de https://cloud.google.com/tpu/pricing
+
+Jouppi, N. P., Kurian, G., Li, S., Ma, P., Nagarajan, R., Nai, L., Patil, N., Subramanian, S., Swing, A., Towles, B., Young, C., Zhou, X., Zhou, Z., & Patterson, D. (2023). TPU v4: An optically reconfigurable supercomputer for machine learning with hardware support for embeddings. En *Proceedings of the 50th Annual International Symposium on Computer Architecture* (pp. 1–14). ACM. https://doi.org/10.1145/3579371.3589350
+
+MLCommons. (2024). *MLPerf Inference v4.1 results* [Conjunto de datos]. GitHub. https://github.com/mlcommons/inference_results_v4.1
+
+NVIDIA. (n.d.). *NVIDIA H100 Tensor Core GPU*. Recuperado el 18 de noviembre de 2026, de https://www.nvidia.com/en-us/data-center/h100/
+
+NVIDIA. (2024, 28 de agosto). *NVIDIA Blackwell platform sets new LLM inference records in MLPerf Inference v4.1*. NVIDIA Technical Blog. https://developer.nvidia.com/blog/nvidia-blackwell-platform-sets-new-llm-inference-records-in-mlperf-inference-v4-1/
+
+Reddi, V. J., Cheng, C., Kanter, D., Mattson, P., Schmuelling, G., Wu, C.-J., Anderson, B., Breughe, M., Charlebois, M., Chou, W., Chukka, R., Coleman, C., Davis, S., Deng, P., Diamos, G., Duke, J., Fick, D., Gardner, J. S., Hubara, I., … Zhou, Y. (2020). MLPerf inference benchmark. En *2020 ACM/IEEE 47th Annual International Symposium on Computer Architecture* (pp. 446–459). IEEE. https://doi.org/10.1109/ISCA45697.2020.00045
+
+Wu, H., Judd, P., Zhang, X., Isaev, M., & Micikevicius, P. (2020). *Integer quantization for deep learning inference: Principles and empirical evaluation* (arXiv:2004.09602). arXiv. https://doi.org/10.48550/arXiv.2004.09602
