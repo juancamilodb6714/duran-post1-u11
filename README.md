@@ -75,3 +75,24 @@ Lo primero que llama la atención es que el kernel salió más rápido que lo qu
 **Checkpoint 1**
 
 ![vectorAdd CPU vs GPU](capturas/p1_cp1_vectorAdd.png)
+
+## Paso 3: Multiplicación de matrices con tiling
+
+Se agregó un kernel `matMulNaive` sin shared memory para comparar, y una multiplicación en CPU en orden i-k-j como referencia. Cada kernel se lanzó 10 veces y se tomó el promedio.
+
+| N | Naive | Tiling TILE=16 | Speedup | GFLOP/s naive | GFLOP/s tiling | Error máximo contra CPU |
+|---|---|---|---|---|---|---|
+| 512 | 1.147 ms | 0.744 ms | 1.54x | 234.0 | 360.6 | 3.05e-05 |
+| 1024 | 9.189 ms | 5.802 ms | 1.58x | 233.7 | 370.1 | 7.63e-05 |
+
+Los dos kernels dan el mismo error, muy por debajo de 1e-3, y el error crece con N porque se suman más productos en float. La mejora del tiling salió menor de lo que se esperaba, apenas 1.5x y no algo cercano a 16x. Revisando se entiende, en la T4 la versión naive no va de verdad a memoria global en cada acceso, los 16 hilos de una fila del bloque leen el mismo `A[row*N+k]` y los de una columna leen elementos seguidos de `B`, entonces la L1 y la L2 atienden casi todo. El tiling ahorra tráfico a la L2, pero luego cada multiplicación hace dos lecturas de shared memory y con TILE=16 el kernel queda limitado por esas lecturas, por eso llega a 370 GFLOP/s, cerca del 4.5% de los 8.1 TFLOPS FP32 de la T4.
+
+**Checkpoint 2**
+
+![matMul naive vs tiling](capturas/p1_cp2_matMul.png)
+
+## Análisis de resultados
+
+El kernel de GPU gana tanto en N grande porque la suma de vectores es un trabajo totalmente paralelo, cada elemento es independiente, y la T4 lanza 65536 bloques de 256 hilos sobre 40 SM, mientras la CPU de Colab recorre el arreglo con un solo hilo. Además el kernel está limitado por memoria y la GPU tiene 320 GB/s de GDDR6 contra unos pocos GB/s que alcanza un núcleo de la Xeon. Con 1M elementos el kernel tarda 0.05 ms y casi todo es el costo de lanzar el grid, con 16M sube a 0.76 ms de forma casi lineal, y la relación con la CPU se mantiene entre 50x y 58x.
+
+El tiempo total con `cudaMemcpy` sale peor que la CPU en todos los tamaños porque la suma hace solo una operación por cada 12 bytes que se mueven, y mover esos bytes por PCIe es mucho más lento que hacer la suma en la CPU donde ya están los datos. En N pequeño se nota aún más, con 1M la copia y la latencia fija de cada `cudaMemcpy` ya cuestan 5.66 ms contra 2.51 ms de la CPU. La GPU solo conviene cuando los datos se quedan en la tarjeta para varias operaciones o cuando el cómputo por byte es alto, como en `matMul`, donde con N=1024 se hacen 2147 millones de operaciones sobre 12 MB de datos.

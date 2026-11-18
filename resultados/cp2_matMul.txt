@@ -1,0 +1,4 @@
+$ nvcc -O2 -o matMul src/matMul.cu && ./matMul
+GPU: Tesla T4 | TILE = 16 | shared por bloque: 2048 bytes
+N =  512 | naive:   1.147 ms (  234.0 GFLOP/s) | tiled:   0.744 ms (  360.6 GFLOP/s) | speedup: 1.54x | err naive: 3.05e-05 | err tiled: 3.05e-05
+N = 1024 | naive:   9.189 ms (  233.7 GFLOP/s) | tiled:   5.802 ms (  370.1 GFLOP/s) | speedup: 1.58x | err naive: 7.63e-05 | err tiled: 7.63e-05
