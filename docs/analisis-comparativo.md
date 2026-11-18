@@ -74,3 +74,48 @@ Solo NVIDIA y UntetherAI enviaron resultados con potencia en estos modelos. Prom
 | SDXL | 13.20 | 4490 W | 0.0029 |
 
 **Quién lidera y por qué.** En throughput la H200 gana los tres modelos, y frente a la H100 la diferencia es pequeña, 6.6% en ResNet-50, 3.8% en BERT y 6.5% en SDXL. Las dos tienen el mismo chip Hopper, lo que cambia es la memoria, 141 GB de HBM3e contra 80 GB, así que en modelos que caben de sobra la ganancia es poca. En SDXL por chip la H200 da 2.18 muestras/s contra 1.36 de la Trillium, 1.6 veces más, y Byrne (2024) reporta lo mismo a nivel de sistema. Lo interesante es que la Trillium mejoró 3.1 veces sobre la v5e por chip, y eso cuadra con la MXU cuatro veces más grande. En eficiencia el dato más llamativo es el de UntetherAI, que con una sola tarjeta de 75 W saca 56277 muestras/s en ResNet-50, más o menos el 60% de una H200, y Byrne (2024) dice que lo hace con cerca del 20% de la potencia, porque su arquitectura pone el cómputo al lado de la memoria y casi no mueve datos. La versión MaxQ de NVIDIA bajó el throughput un 26% para ahorrar energía, eso muestra que el punto de operación de la GPU se puede mover entre rendimiento y vatios. El Jetson Orin aparece en SDXL con casi 10 s por imagen, sirve para ver que en el borde un modelo generativo grande todavía no es práctico.
+
+## 3. Análisis costo-rendimiento y TCO
+
+| Acelerador | Precio consultado | Potencia | Fuente del precio |
+|---|---|---|---|
+| NVIDIA H100 SXM | cerca de 30000 USD | 700 W | valor de referencia de la guía, NVIDIA no publica precio de lista |
+| TPU v6e Trillium | 2.70 USD por chip-hora bajo demanda, 1.22 USD con compromiso de 3 años | no aplica, se paga por hora | Google Cloud (n.d.-c), us-east1 |
+| TPU v5e | 1.20 USD por chip-hora bajo demanda | no aplica | Google Cloud (n.d.-c), us-central1 |
+| AMD Alveo U55C | 4747 USD | 115 W típica | AMD (n.d.), tienda oficial |
+| Mac Studio M3 Ultra | desde 3999 USD | SoC completo | Apple (2025) |
+
+La guía da 8000 USD para la Alveo U55C, pero en la tienda de AMD hoy sale a 4747 USD. En los cálculos se usó el precio consultado.
+
+Para la energía se asumió 0.12 USD por kWh, operación 24 horas los 365 días y 3 años, es decir 26280 horas. Estas suposiciones son del autor y sirven para comparar, no son datos de un proveedor.
+
+### Escenario a, startup con inferencia en la nube a menos de 100 solicitudes por segundo
+
+Con 100 solicitudes por segundo de un modelo de visión tipo ResNet-50 una sola H100 está casi vacía, en MLPerf cada H100 aguanta unas 73000 consultas por segundo con p99 bajo 15 ms, o sea que la carga usaría menos del 0.2% del chip. Comprar la GPU sería pagar por capacidad que no se usa.
+
+| Opción a 3 años | Adquisición | Energía | Total aproximado |
+|---|---|---|---|
+| Comprar 1 H100 | 30000 USD más el servidor | 700 W × 26280 h = 18396 kWh, unos 2208 USD | más de 32208 USD sin contar servidor ni operación |
+| 1 chip TPU v6e bajo demanda | 0 | incluida | 2.70 × 26280 = 70956 USD |
+| 1 chip TPU v6e con compromiso de 3 años | 0 | incluida | 1.22 × 26280 = 32062 USD |
+| 1 chip TPU v5e bajo demanda solo 12 horas al día | 0 | incluida | 1.20 × 13140 = 15768 USD |
+
+Haciendo la cuenta se ve que comprar no gana claro ni siquiera contra el compromiso de 3 años, porque al precio de la H100 hay que sumarle el servidor, la refrigeración y alguien que lo mantenga. Para una startup con carga baja y que puede cambiar, lo mejor es alquilar en la nube un acelerador pequeño, una TPU v5e o una GPU de inferencia como la L4, y apagarlo cuando no hay tráfico. El costo de software también pesa, con GPU se usa TensorRT o vLLM y casi todo el ecosistema está listo, con TPU hay que pasar el modelo por XLA.
+
+### Escenario b, inferencia en el borde
+
+En una cámara, un celular o un carro el límite no es el dinero sino los vatios y el espacio. Una Alveo U55C gasta 115 W típicos, en 3 años son 3022 kWh y unos 363 USD de energía por equipo más los 4747 USD de la tarjeta, y además necesita un servidor con PCIe al lado. Una NPU integrada ya viene pagada dentro del SoC y gasta pocos vatios, a 5 W serían 131 kWh y unos 16 USD en 3 años. Para celulares y cámaras inteligentes la NPU es la opción que tiene sentido, para un vehículo autónomo que tiene que correr varios modelos a la vez se usa un SoC tipo Jetson Orin con GPU integrada, y la FPGA queda para cuando hay que garantizar latencia en una línea industrial con un servidor cerca, como se ve en el Perfil B.
+
+## 4. Recomendación por perfil
+
+### Perfil A, laboratorio universitario con 10000 USD para visión y NLP hasta 7B parámetros
+
+Se recomienda una estación de trabajo con GPU NVIDIA de 24 a 48 GB de VRAM. Primero, por presupuesto, una H100 de 30000 USD no entra y una estación con GPU de escritorio sí. Segundo, por memoria, un modelo de 7B en BF16 ocupa unos 14 GB solo de pesos, entonces cabe para inferencia, y para ajuste fino se usa LoRA o QLoRA, porque un entrenamiento completo con Adam necesita cerca de 16 bytes por parámetro, unos 112 GB. Tercero, por ecosistema, casi todo el código de investigación sale primero en PyTorch con CUDA, y la TPU obliga a pasar por XLA. La limitación es que no alcanza para preentrenar modelos grandes y que para corridas grandes habría que pedir créditos de nube. Un Mac Studio M3 Ultra de 3999 USD tiene más memoria unificada, pero su Neural Engine es para inferencia con Core ML y el entrenamiento en GPU de Apple tiene menos soporte en las librerías.
+
+### Perfil B, manufactura con inspección visual bajo 5 ms en 50 líneas
+
+Se recomienda una FPGA por línea, el detalle está en la decisión técnica del Paso 6. Los criterios son latencia determinística, que una falla no tumbe las 50 líneas y que el modelo de inspección cambia poco, entonces el costo de diseño en HLS se paga una sola vez. La limitación es el costo de capital y que cada cambio de modelo obliga a volver a sintetizar el diseño.
+
+### Perfil C, proveedor de nube que entrena modelos de 70B en clústeres de 512 aceleradores
+
+Se recomienda un clúster de GPU H100 o H200 con NVLink dentro de cada nodo y InfiniBand entre nodos. El primer criterio es la comunicación colectiva, con 900 GB/s de NVLink por GPU y la librería NCCL el all-reduce de los gradientes se hace rápido dentro del nodo. El segundo es que un proveedor de nube puede comprar GPU, mientras que las TPU solo existen dentro de Google Cloud, entonces no puede montar su propio pod de TPU. El tercero es el rendimiento, en MLPerf v4.1 la H200 da 34864 tokens/s en Llama 2 70B con 8 GPU (NVIDIA, 2024). La limitación es la energía, 512 GPU a 700 W son 358 kW solo en aceleradores, y el precio. Si el proveedor fuera Google, un pod de TPU con ICI y conmutadores ópticos sería igual de válido (Jouppi et al., 2023).
