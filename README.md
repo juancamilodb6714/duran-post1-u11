@@ -96,3 +96,42 @@ Los dos kernels dan el mismo error, muy por debajo de 1e-3, y el error crece con
 El kernel de GPU gana tanto en N grande porque la suma de vectores es un trabajo totalmente paralelo, cada elemento es independiente, y la T4 lanza 65536 bloques de 256 hilos sobre 40 SM, mientras la CPU de Colab recorre el arreglo con un solo hilo. Además el kernel está limitado por memoria y la GPU tiene 320 GB/s de GDDR6 contra unos pocos GB/s que alcanza un núcleo de la Xeon. Con 1M elementos el kernel tarda 0.05 ms y casi todo es el costo de lanzar el grid, con 16M sube a 0.76 ms de forma casi lineal, y la relación con la CPU se mantiene entre 50x y 58x.
 
 El tiempo total con `cudaMemcpy` sale peor que la CPU en todos los tamaños porque la suma hace solo una operación por cada 12 bytes que se mueven, y mover esos bytes por PCIe es mucho más lento que hacer la suma en la CPU donde ya están los datos. En N pequeño se nota aún más, con 1M la copia y la latencia fija de cada `cudaMemcpy` ya cuestan 5.66 ms contra 2.51 ms de la CPU. La GPU solo conviene cuando los datos se quedan en la tarjeta para varias operaciones o cuando el cómputo por byte es alto, como en `matMul`, donde con N=1024 se hacen 2147 millones de operaciones sobre 12 MB de datos.
+
+## Paso 4: Transferencia asíncrona con streams
+
+| Versión | Tiempo total | Errores |
+|---|---|---|
+| Síncrona, H2D + kernel + D2H completos | 16.79 ms | 0 |
+| 4 streams solapados | 13.52 ms | 0 |
+| Reducción | 19.5% | |
+
+El programa imprimió `asyncEngineCount: 3`, esta T4 tiene 3 motores de copia. Las dos versiones dan 0 errores contra la suma hecha en CPU, y antes de la versión con streams se limpian `h_C` y `d_C` para que la verificación no use el resultado de la síncrona. La reducción salió de 19.5%, más que el 11.7% de la guía, y en el Paso 5 se explica de dónde sale.
+
+**Checkpoint 4**
+
+![vectorAddStream síncrono vs streams](capturas/p1_cp4_vectorAddStream.png)
+
+## Paso 5: Decisión técnica — ¿cudaMemcpyAsync con streams o transferencia síncrona para vectorAdd?
+
+Con N=16M se mueven 64 MB por cada arreglo, 192 MB en total. A 10 a 12 GB/s eso son entre 16 y 19 ms, y en la T4 la versión síncrona tardó 16.79 ms, o sea unos 12 GB/s efectivos, aunque la T4 es PCIe Gen3 x16 y no 4.0. El kernel de 16M tardó 0.76 ms, más de 20 veces menos que la transferencia, así que vectorAdd es claramente memory-bound. Si los streams solo pudieran esconder el cómputo dentro de la transferencia, el ahorro máximo sería ese 0.76 ms, un 4.5% del total, porque el solapamiento solo puede ocultar la parte más pequeña. Lo que se midió fue 19.5%, y eso sorprendió. La razón es que la T4 tiene varios motores de copia y PCIe es full duplex, entonces con streams la copia D2H de un chunk va al mismo tiempo que la H2D del siguiente. La cuenta da bien, las dos H2D de 128 MB tardan unos 11.2 ms y la D2H de 64 MB unos 5.6 ms, y con 4 chunks solo queda sin solapar la parte final de un chunk, 11.2 más 6.4 entre 4 da unos 12.8 ms, y se midió 13.5 ms. Aun así el piso es la propia transferencia, ningún número de streams baja de esos 11.2 ms. Para vectorAdd usar streams ayuda poco y el beneficio real sería no mover los datos, o fusionar más operaciones sobre los datos ya en la GPU. En `matMulTiled` el cómputo es O(N³) sobre O(N²) datos, con N=1024 el kernel tardó 5.8 ms para solo 12 MB de datos, alrededor de 1 ms de copia, ahí el kernel domina y los streams sí permiten esconder casi toda la transferencia.
+
+## Paso 6: Decisión técnica — ¿Cuántos streams usar, y qué limita la ganancia al aumentar su número?
+
+Se compiló `vectorAddStream.cu` con `-DNSTREAMS` de 1 a 32 y se corrió 3 veces cada uno, siempre con N=16M.
+
+| NSTREAMS | Corridas con streams | Promedio | Reducción contra síncrono |
+|---|---|---|---|
+| 1 | 16.82, 16.79, 16.88 ms | 16.83 ms | 0.0% |
+| 2 | 14.52, 14.56, 14.56 ms | 14.55 ms | 13.5% |
+| 4 | 13.52, 13.57, 13.47 ms | 13.52 ms | 19.6% |
+| 8 | 13.21, 13.20, 13.23 ms | 13.21 ms | 21.5% |
+| 16 | 13.15, 13.09, 13.18 ms | 13.14 ms | 21.9% |
+| 32 | 13.46, 13.48, 13.48 ms | 13.47 ms | 19.9% |
+
+El tiempo no baja de forma proporcional. De 1 a 2 streams se ganan 2.3 ms, de 2 a 4 un 1 ms, de 4 a 16 apenas 0.4 ms y con 32 vuelve a subir. Lo que limita es lo que todos los streams comparten, el ancho de banda del bus PCIe y los motores DMA físicos. La T4 reporta 3 copy engines, pero en la práctica solo hay dos sentidos en el bus, uno para H2D y otro para D2H, y con 2 a 4 streams ya hay siempre una copia de subida, una de bajada y un kernel en curso, el pipeline queda lleno. Agregar más streams no crea más motores ni más GB/s, solo parte la misma transferencia en trozos más pequeños, y cada trozo paga su propia latencia de lanzamiento y de sincronización, por eso con 32 chunks de 2 MB el tiempo empeora. Dividir en más streams tampoco reduce el tiempo total de transferencia, los 128 MB de subida siguen tardando unos 11.2 ms porque el bus da lo mismo, lo único que cambia es cuándo se mueve cada parte para que se solape mejor con el kernel y con la copia de vuelta. Para esta GPU lo razonable es usar entre 4 y 8 streams.
+
+**Checkpoint 5**
+
+![Barrido de NSTREAMS](capturas/p1_cp5_barrido_streams.png)
+
+---

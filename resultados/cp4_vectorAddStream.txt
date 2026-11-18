@@ -1,0 +1,5 @@
+$ nvcc -O2 -o vectorAddStream src/vectorAddStream.cu && ./vectorAddStream
+GPU: Tesla T4 | copy engines (asyncEngineCount): 3 | NSTREAMS = 4
+Sincrono (H2D + kernel + D2H completos): 16.79 ms | Errores: 0
+Con streams (4, solapado): 13.52 ms | Errores: 0
+Reduccion: 19.5%

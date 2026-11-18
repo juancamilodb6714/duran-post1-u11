@@ -1,0 +1,19 @@
+$ for s in 1 2 4 8 16 32; do nvcc -O2 -DNSTREAMS=$s -o vas_$s src/vectorAddStream.cu; for r in 1 2 3; do ./vas_$s | grep -E "Sincrono|streams" | tr "\n" " "; echo; done; done
+Sincrono (H2D + kernel + D2H completos): 16.82 ms | Errores: 0 Con streams (1, solapado): 16.82 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.80 ms | Errores: 0 Con streams (1, solapado): 16.79 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.85 ms | Errores: 0 Con streams (1, solapado): 16.88 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.84 ms | Errores: 0 Con streams (2, solapado): 14.52 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.83 ms | Errores: 0 Con streams (2, solapado): 14.56 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.81 ms | Errores: 0 Con streams (2, solapado): 14.56 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.78 ms | Errores: 0 Con streams (4, solapado): 13.52 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.86 ms | Errores: 0 Con streams (4, solapado): 13.57 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.87 ms | Errores: 0 Con streams (4, solapado): 13.47 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.83 ms | Errores: 0 Con streams (8, solapado): 13.21 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.82 ms | Errores: 0 Con streams (8, solapado): 13.20 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.87 ms | Errores: 0 Con streams (8, solapado): 13.23 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.82 ms | Errores: 0 Con streams (16, solapado): 13.15 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.84 ms | Errores: 0 Con streams (16, solapado): 13.09 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.81 ms | Errores: 0 Con streams (16, solapado): 13.18 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.79 ms | Errores: 0 Con streams (32, solapado): 13.46 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.82 ms | Errores: 0 Con streams (32, solapado): 13.48 ms | Errores: 0 
+Sincrono (H2D + kernel + D2H completos): 16.86 ms | Errores: 0 Con streams (32, solapado): 13.48 ms | Errores: 0 
