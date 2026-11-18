@@ -1,0 +1,5 @@
+$ nvcc -O2 -o vectorAdd src/vectorAdd.cu && ./vectorAdd
+GPU: Tesla T4 (cc 7.5, 40 SM)
+N =  1048576 ( 1M) | CPU:     2.51 ms | GPU kernel:   0.05 ms | GPU total:    5.66 ms | Errores: 0
+N =  4194304 ( 4M) | CPU:    11.70 ms | GPU kernel:   0.20 ms | GPU total:   19.07 ms | Errores: 0
+N = 16777216 (16M) | CPU:    42.14 ms | GPU kernel:   0.76 ms | GPU total:   76.20 ms | Errores: 0
